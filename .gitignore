@@ -1,0 +1,13 @@
+# Build output
+build/
+build-*/
+installer/Output/
+
+# Steinberg's ASIO SDK - its license forbids redistribution. See CMakeLists.txt.
+ThirdParty/ASIOSDK/
+
+# IDE / OS noise
+.vs/
+*.user
+.DS_Store
+Thumbs.db

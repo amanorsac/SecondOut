@@ -1,0 +1,114 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: macOS (universal VST3 / AU / Standalone)
+    runs-on: macos-14
+    env:
+      # Signing + notarisation only run when these repository secrets exist.
+      # Without them the job still builds and uploads unsigned bundles.
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: cmake -S . -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build
+        run: cmake --build build --config Release --target SecondOut_VST3 SecondOut_AU SecondOut_Standalone SecondOutTests
+
+      - name: Unit tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Read version
+        id: version
+        run: echo "version=$(sed -n 's/^project(SecondOut VERSION \([0-9.]*\)).*/\1/p' CMakeLists.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Import signing certificate
+        if: env.MACOS_CERTIFICATE != ''
+        run: |
+          KEYCHAIN_PW=$(uuidgen)
+          echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PW" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PW" build.keychain
+          security import certificate.p12 -k build.keychain -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/productsign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PW" build.keychain
+          rm certificate.p12
+
+      - name: Code-sign bundles
+        if: env.MACOS_CERTIFICATE != ''
+        run: |
+          ART=build/SecondOut_artefacts/Release
+          for bundle in "$ART/VST3/SecondOut.vst3" "$ART/AU/SecondOut.component" "$ART/Standalone/SecondOut.app"; do
+            codesign --force --deep --options runtime --timestamp \
+              --sign "Developer ID Application" "$bundle"
+            codesign --verify --deep --strict "$bundle"
+          done
+
+      - name: Build installer package
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          ART=build/SecondOut_artefacts/Release
+          ROOT=pkgroot
+          mkdir -p "$ROOT/Library/Audio/Plug-Ins/VST3" "$ROOT/Library/Audio/Plug-Ins/Components" "$ROOT/Applications"
+          cp -R "$ART/VST3/SecondOut.vst3"      "$ROOT/Library/Audio/Plug-Ins/VST3/"
+          cp -R "$ART/AU/SecondOut.component"   "$ROOT/Library/Audio/Plug-Ins/Components/"
+          cp -R "$ART/Standalone/SecondOut.app" "$ROOT/Applications/"
+          pkgbuild --root "$ROOT" \
+            --identifier com.amanorsacstudio.secondout.installer \
+            --version "$VERSION" \
+            --install-location / \
+            "SecondOut-$VERSION-macOS-unsigned.pkg"
+
+      - name: Sign and notarise installer
+        if: env.MACOS_CERTIFICATE != ''
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          productsign --sign "Developer ID Installer" \
+            "SecondOut-$VERSION-macOS-unsigned.pkg" "SecondOut-$VERSION-macOS.pkg"
+          xcrun notarytool submit "SecondOut-$VERSION-macOS.pkg" \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "SecondOut-$VERSION-macOS.pkg"
+          rm "SecondOut-$VERSION-macOS-unsigned.pkg"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: SecondOut-${{ steps.version.outputs.version }}-macOS
+          path: SecondOut-*.pkg
+          if-no-files-found: error
+
+  windows:
+    # Regression check that the shared CMake/source still builds on Windows.
+    # No ASIO SDK on the runner, so this is a WASAPI-only build - the
+    # shipped Windows installer is built locally with the SDK present.
+    name: Windows (WASAPI-only build + tests)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build build --config Release --target SecondOut_VST3 SecondOut_Standalone SecondOutTests
+
+      - name: Unit tests
+        run: ctest --test-dir build -C Release --output-on-failure

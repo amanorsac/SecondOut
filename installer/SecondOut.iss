@@ -2,7 +2,7 @@
 ; Build with: ISCC.exe SecondOut.iss
 
 #define AppName "SecondOut"
-#define AppVersion "1.3.0"
+#define AppVersion "1.3.1"
 #define AppPublisher "Amanorsac Studio"
 #define BuildDir "..\build\SecondOut_artefacts\Release"
 

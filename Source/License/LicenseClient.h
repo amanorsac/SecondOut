@@ -67,6 +67,14 @@ public:
         loadDeviceKey();
         loadCachedProof();
 
+        // A stored key with no usable proof is what a failed activation leaves
+        // behind, and what an expired grace window decays to. Re-run the
+        // activation heartbeat now rather than making someone sit in front of
+        // the activation screen until the hourly timer comes round; it costs
+        // no device seat (see activate()).
+        if (licenseKey.isNotEmpty() && ! isLicensed())
+            activate (licenseKey, {});
+
         // Re-validate periodically so a long-running DAW session's offline
         // window keeps rolling forward rather than counting down to zero.
         startTimer (60 * 60 * 1000);
@@ -79,10 +87,16 @@ public:
         masterReference.clear();
     }
 
+    /**
+     * The live licensing service. The environment override exists for
+     * development only - the DEFAULT must stay the real server, because 1.3.0
+     * defaulted to localhost and every genuine activation went to a machine
+     * that wasn't there.
+     */
     static juce::String defaultBaseUrl()
     {
         auto fromEnv = juce::SystemStats::getEnvironmentVariable ("AMANORSAC_LICENSE_URL", {});
-        return fromEnv.isNotEmpty() ? fromEnv : "http://127.0.0.1:4790";
+        return fromEnv.isNotEmpty() ? fromEnv : "https://amanorsac.studio";
     }
 
     juce::String getBaseUrl() const { return baseUrl; }
@@ -121,11 +135,30 @@ public:
 
             if (r.ok)
             {
+                // adoptProof() checks the proof's licenseKey against this one,
+                // so it has to be set first - and put back if the proof turns
+                // out not to verify, so a rejected activation leaves nothing
+                // half-applied on disk.
+                const auto previousKey = self->licenseKey;
                 self->licenseKey = key;
+
                 const auto proof = r.body.getProperty ("proof", "").toString();
-                if (proof.isNotEmpty())
-                    self->adoptProof (proof);
-                self->persistLicenseKey();
+                if (proof.isNotEmpty() && self->adoptProof (proof))
+                {
+                    self->persistLicenseKey();
+                }
+                else
+                {
+                    self->licenseKey = previousKey;
+
+                    // A 200 carrying a proof this build cannot verify means the
+                    // key compiled in isn't the one the server signs with.
+                    // 1.3.0 reported "Activated." here and then stayed locked
+                    // with no explanation; say what is actually wrong instead.
+                    r = LicenseResult::failure ("This license couldn't be verified by this version of "
+                                                "SecondOut. Please install the latest version and try again.",
+                                                "proof_not_verified", r.httpStatus);
+                }
             }
             else if (r.code == "device_limit_reached")
             {
@@ -400,26 +433,24 @@ private:
         recomputeLicensedFlag();
     }
 
-    void adoptProof (const juce::String& signedBlob)
+    /**
+     * Verifies a signed proof and, only if it is valid for this device and
+     * this license, makes it the cached one. Returns false WITHOUT disturbing
+     * any proof already held: a garbled or wrongly-signed reply must never
+     * cost an already-licensed user their access mid-session.
+     */
+    bool adoptProof (const juce::String& signedBlob)
     {
         auto body = licensecrypto::parseAndVerifySignedBlob (signedBlob);
         if (! body.isObject())
-        {
-            proofValid = false;
-            recomputeLicensedFlag();
-            return;
-        }
+            return false;
 
         // Bound to THIS device and THIS license: a proof copied to another
         // machine, or presented for a different key, verifies cryptographically
         // and then fails right here -- which is the point.
         if (body.getProperty ("deviceKey", "").toString() != deviceKey
             || body.getProperty ("licenseKey", "").toString() != licenseKey)
-        {
-            proofValid = false;
-            recomputeLicensedFlag();
-            return;
-        }
+            return false;
 
         proofExpiresAt  = (juce::int64) body.getProperty ("expiresAt", 0);
         proofGraceUntil = (juce::int64) body.getProperty ("graceUntil", 0);
@@ -434,6 +465,8 @@ private:
             if (enc.getSize() > 0)
                 proofFile().replaceWithData (enc.getData(), enc.getSize());
         }
+
+        return true;
     }
 
     void loadCachedProof()
@@ -454,7 +487,11 @@ private:
             f.deleteFile();
             return;
         }
-        adoptProof (juce::String::fromUTF8 ((const char*) plain.getData(), (int) plain.getSize()));
+        // A cached proof that no longer verifies - superseded signing key,
+        // corruption - is dead weight. Drop it so the next activation writes
+        // a fresh one instead of re-reading this on every launch.
+        if (! adoptProof (juce::String::fromUTF8 ((const char*) plain.getData(), (int) plain.getSize())))
+            f.deleteFile();
     }
 
     //==========================================================================

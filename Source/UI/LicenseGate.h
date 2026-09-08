@@ -17,7 +17,7 @@ public:
         : client (clientIn)
     {
         keyBox.setMultiLine (false);
-        keyBox.setTextToShowWhenEmpty ("SOUT-XXXX-XXXX-XXXX-XXXX", theme::textFaint);
+        keyBox.setTextToShowWhenEmpty ("SECO-XXXX-XXXX-XXXX", theme::textFaint);
         keyBox.setFont (theme::uiFont (15.0f));
         keyBox.setColour (juce::TextEditor::backgroundColourId, theme::control);
         keyBox.setColour (juce::TextEditor::outlineColourId, theme::hairline);

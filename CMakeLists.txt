@@ -35,6 +35,10 @@ juce_add_plugin(SecondOut
     COPY_PLUGIN_AFTER_BUILD FALSE
     # Required for notarisation; no effect on Windows.
     HARDENED_RUNTIME_ENABLED TRUE
+    # Under the hardened runtime, a usage description alone is not enough to
+    # reach an input device - the entitlement has to be there too, or macOS
+    # kills the process on first access instead of prompting.
+    HARDENED_RUNTIME_OPTIONS "com.apple.security.device.audio-input"
     # The standalone opens an audio input to have something to send; without a
     # usage description macOS terminates the app on first access instead of asking.
     MICROPHONE_PERMISSION_ENABLED TRUE
@@ -89,6 +93,19 @@ if (APPLE)
     # LicenseCrypto.h: SecKey signature verification, SecRandom, hardware UUID.
     # (CommonCrypto is part of libSystem and needs nothing extra.)
     target_link_libraries(SecondOut PRIVATE "-framework Security" "-framework IOKit")
+endif()
+
+# ---- Standalone app ----
+# Replaces JUCE's stock standalone window (an "Options" button plus a yellow
+# muted-input notification bar) with Source/Standalone/StandaloneApp.cpp. Set
+# on the Standalone target alone: the VST3 and AU builds never compile it.
+if (TARGET SecondOut_Standalone)
+    target_sources(SecondOut_Standalone PRIVATE Source/Standalone/StandaloneApp.cpp)
+    target_compile_definitions(SecondOut_Standalone PRIVATE JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1)
+
+    if (MSVC)
+        target_compile_options(SecondOut_Standalone PRIVATE /utf-8)
+    endif()
 endif()
 
 # ---- Unit tests (pure C++, no JUCE dependency) ----

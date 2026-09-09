@@ -42,20 +42,33 @@ void SecondOutProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
 {
     juce::ScopedNoDenormals noDenormals;
 
-    // Audio passes through untouched — we only tap a copy. That tap requires
-    // a valid license; isLicensed() is real-time safe (a single atomic read,
-    // see LicenseClient.h) so this check costs nothing measurable here.
-    // Unlicensed just means the second output silently doesn't stream, same
-    // as any other "can't do it right now" state in SecondaryDeviceManager -
-    // never a dialog, never touching the DAW's own signal path.
-    if (! licenseClient.isLicensed())
-        return;
+    // In a DAW, audio passes through untouched - we only tap a copy. In the
+    // standalone there is no host to pass it back to: the feed goes to the
+    // chosen second device, and routing live input straight to the default
+    // output device is a feedback loop. That is the whole reason JUCE's
+    // standalone mutes its input and warns about it; silencing the passthrough
+    // instead lets the input stay live with nothing to feed back into.
+    // Deliberately outside the license check below, so it holds whether or not
+    // this device is activated.
+    const bool silenceMainOutput = (wrapperType == wrapperType_Standalone);
 
-    const int numFrames = buffer.getNumSamples();
-    const float* left  = buffer.getReadPointer (0);
-    const float* right = buffer.getNumChannels() > 1 ? buffer.getReadPointer (1) : nullptr;
+    // The tap requires a valid license; isLicensed() is real-time safe (a
+    // single atomic read, see LicenseClient.h) so this check costs nothing
+    // measurable here. Unlicensed just means the second output silently
+    // doesn't stream, same as any other "can't do it right now" state in
+    // SecondaryDeviceManager - never a dialog, never touching the DAW's own
+    // signal path.
+    if (licenseClient.isLicensed())
+    {
+        const int numFrames = buffer.getNumSamples();
+        const float* left  = buffer.getReadPointer (0);
+        const float* right = buffer.getNumChannels() > 1 ? buffer.getReadPointer (1) : nullptr;
 
-    secondary.pushAudio (left, right, numFrames);
+        secondary.pushAudio (left, right, numFrames);
+    }
+
+    if (silenceMainOutput)
+        buffer.clear();
 }
 
 //==============================================================================

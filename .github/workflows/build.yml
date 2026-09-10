@@ -91,8 +91,42 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
           security default-keychain -s "$KEYCHAIN"
 
-          echo "$DEV_ID_APP_P12"  | base64 --decode > app.p12
-          echo "$DEV_ID_INST_P12" | base64 --decode > installer.p12
+          # Decode a base64-encoded .p12 secret, and say exactly what is wrong
+          # when it isn't one. Only the shape is ever reported - length and
+          # whether it looks like PEM - never any of the value itself.
+          decode_p12 () {
+            raw="$1"; out="$2"; name="$3"
+            stripped=$(printf '%s' "$raw" | tr -d '[:space:]')
+
+            if [ -z "$stripped" ]; then
+              echo "::error::$name is empty."
+              return 1
+            fi
+
+            case "$stripped" in
+              -----BEGIN*)
+                echo "::error::$name holds PEM text (it starts with -----BEGIN), but a base64-encoded .p12 is required. Regenerate it with:  base64 -i developerID_xxx.p12 | pbcopy"
+                return 1 ;;
+            esac
+
+            if ! printf '%s' "$stripped" | base64 --decode > "$out" 2>/dev/null || [ ! -s "$out" ]; then
+              echo "::error::$name is not valid base64 (${#stripped} characters after whitespace was stripped). It should be the output of:  base64 -i developerID_xxx.p12"
+              return 1
+            fi
+
+            # PKCS#12 is DER, so byte one is always an ASN.1 SEQUENCE tag (0x30).
+            # Catches a .cer/.pem that happened to base64-decode into something.
+            if [ "$(head -c 1 "$out" | xxd -p)" != "30" ]; then
+              echo "::error::$name decoded, but the result is not a PKCS#12 archive. It is probably a .cer or .pem - those hold only the certificate, with no private key, and cannot sign."
+              return 1
+            fi
+
+            echo "  $name: decoded OK ($(wc -c < "$out" | tr -d ' ') bytes)"
+          }
+
+          echo "Checking certificate secrets:"
+          decode_p12 "$DEV_ID_APP_P12"  app.p12       MAC_CERT_P12
+          decode_p12 "$DEV_ID_INST_P12" installer.p12 MAC_INSTALLER_P12
 
           security import app.p12       -k "$KEYCHAIN" -P "$DEV_ID_APP_P12_PASSWORD"  -T /usr/bin/codesign -T /usr/bin/productsign
           security import installer.p12 -k "$KEYCHAIN" -P "$DEV_ID_INST_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productsign

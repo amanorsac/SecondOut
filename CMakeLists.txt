@@ -7,7 +7,7 @@ if (APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "")
 endif()
 
-project(SecondOut VERSION 1.3.1)
+project(SecondOut VERSION 1.3.2)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

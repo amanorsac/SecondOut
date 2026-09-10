@@ -95,6 +95,36 @@ cmake --build build --config Release --target SecondOutTests
 ctest --test-dir build -C Release --output-on-failure
 ```
 
+## Releasing
+
+`.github/workflows/build.yml` builds both platforms on every push. The macOS job
+signs, notarises and staples a `.pkg`; the Windows installer is still built
+locally with Inno Setup and is not yet Authenticode-signed.
+
+Signing uses these **organisation** secrets (Amanorsac-Studio):
+
+| Secret | What it is |
+|---|---|
+| `MAC_CERT_P12` / `MAC_CERT_PASSWORD` | Developer ID **Application** cert — signs the .vst3/.component/.app |
+| `MAC_INSTALLER_P12` / `MAC_INSTALLER_PASSWORD` | Developer ID **Installer** cert — signs the .pkg (a different certificate) |
+| `APPLE_TEAM_ID` | Apple Developer team identifier |
+| `ASC_KEY_P8` / `ASC_KEY_ID` / `ASC_ISSUER_ID` | App Store Connect API key, used by `notarytool` |
+
+`APPLE_DIST_P12` and `MAS_INSTALLER_P12` are the Mac App Store pair and are
+deliberately **not** used here — direct distribution needs the Developer ID
+certificates, and importing a second identity makes `codesign`'s identity
+matching ambiguous.
+
+**This repository must stay private.** Those secrets are scoped to "Private
+repositories"; GitHub withholds org secrets from public repos, so a public
+SecondOut gets empty strings and silently produces an unsigned build. (Keeping
+the source closed also matters for a paid product — the licensing crypto does
+not depend on source secrecy, but public source makes a check-removed build
+trivial to produce.)
+
+Pushing a **tag** with any signing secret missing fails the build rather than
+publishing; any other ref warns and labels the artefact `UNSIGNED`.
+
 ## Testing checklist before live use
 
 1. Unit tests pass (ring buffer stress, drift servo convergence, resampler quality).

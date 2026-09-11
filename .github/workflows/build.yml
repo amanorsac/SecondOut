@@ -175,7 +175,8 @@ jobs:
               -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_STYLE=Manual \
               -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="Developer ID Application" \
               -DCMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-              -DCMAKE_XCODE_ATTRIBUTE_OTHER_CODE_SIGN_FLAGS="--timestamp"
+              -DCMAKE_XCODE_ATTRIBUTE_OTHER_CODE_SIGN_FLAGS="--timestamp" \
+              -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO
           else
             cmake -S . -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
           fi
@@ -201,6 +202,18 @@ jobs:
             codesign --display --verbose=2 --entitlements - "$bundle" 2>&1 | sed 's/^/  /'
             codesign --display --verbose=2 "$bundle" 2>&1 | grep -q "flags=.*runtime" \
               || { echo "::error::$bundle is not signed with the hardened runtime - notarisation would reject it."; exit 1; }
+
+            # A secure timestamp is mandatory for notarisation, and its absence
+            # is only discovered by Apple rejecting the upload minutes later.
+            codesign --display --verbose=4 "$bundle" 2>&1 | grep -q "^Timestamp=" \
+              || { echo "::error::$bundle has no secure timestamp - notarisation would reject it."; exit 1; }
+
+            # get-task-allow is a debug entitlement; Apple refuses anything
+            # carrying it. Xcode can inject it silently.
+            if codesign --display --entitlements - --xml "$bundle" 2>/dev/null | grep -q "get-task-allow"; then
+              echo "::error::$bundle carries com.apple.security.get-task-allow - notarisation would reject it."
+              exit 1
+            fi
           done
 
       - name: Assemble installer package
@@ -240,7 +253,29 @@ jobs:
             || { echo "::error::ASC_KEY_P8 is neither base64-encoded nor a raw .p8 private key."; rm -f asc.p8; exit 1; }
 
           trap 'rm -f asc.p8' EXIT
-          xcrun notarytool submit "$PKG" --key asc.p8 --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --wait --timeout 30m
+
+          # --wait exits 0 even when Apple returns "Invalid", and the bare
+          # result says nothing about WHY. Capture the submission id and, on
+          # anything other than Accepted, print Apple's own per-file log -
+          # that names the offending binary and the reason.
+          set +e
+          RESULT=$(xcrun notarytool submit "$PKG" \
+                     --key asc.p8 --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" \
+                     --wait --timeout 30m --output-format json)
+          set -e
+          echo "$RESULT"
+
+          SUBMISSION_ID=$(printf '%s' "$RESULT" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("id",""))' 2>/dev/null || true)
+          STATUS=$(printf '%s' "$RESULT" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("status",""))' 2>/dev/null || true)
+
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::Apple returned notarisation status '$STATUS'. Its log follows."
+            if [ -n "$SUBMISSION_ID" ]; then
+              xcrun notarytool log "$SUBMISSION_ID" \
+                --key asc.p8 --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" || true
+            fi
+            exit 1
+          fi
 
           xcrun stapler staple "$PKG"
           xcrun stapler validate "$PKG"

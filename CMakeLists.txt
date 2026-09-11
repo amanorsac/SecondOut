@@ -21,7 +21,8 @@ endif()
 
 juce_add_plugin(SecondOut
     COMPANY_NAME "Amanorsac Studio"
-    BUNDLE_ID "com.amanorsacstudio.secondout"
+    # Matches the identifier registered with Apple.
+    BUNDLE_ID "com.amanorsac.secondout"
     PLUGIN_MANUFACTURER_CODE Amst
     PLUGIN_CODE Sc2o
     FORMATS ${SECONDOUT_FORMATS}

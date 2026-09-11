@@ -7,9 +7,21 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Pushing three commits in a row used to leave three full builds running at
+# once. Only the newest ref matters, so supersede the older ones.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   macos:
     name: macOS (signed + notarised VST3 / AU / Standalone)
+    # macOS runners cost roughly 6x Windows and 10x Linux per minute, and on a
+    # private repo that comes out of a monthly allowance. Building a notarised
+    # Mac package on every commit burns it for nothing - notarisation only
+    # matters for something you actually ship. Releases (tags) and on-demand
+    # runs only; Windows still checks every push, at a tenth of the price.
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     runs-on: macos-14
     env:
       # Developer ID Application - signs the .vst3 / .component / .app bundles.
